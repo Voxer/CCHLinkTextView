@@ -29,14 +29,17 @@
 
 #import "CCHLinkTextViewDelegate.h"
 #import "CCHLinkGestureRecognizer.h"
+#import "CCHAttributedLink.h"
 
 NSString *const CCHLinkAttributeName = @"CCHLinkAttributeName";
 #define DEBUG_COLOR [UIColor colorWithWhite:0 alpha:0.3]
 
 @interface CCHLinkTextView () <UIGestureRecognizerDelegate>
 
-@property (nonatomic, copy) NSArray *rangeValuesForTouchDown;
-@property (nonatomic) CCHLinkGestureRecognizer *linkGestureRecognizer;
+@property (nonatomic, strong) CCHLinkGestureRecognizer* linkGestureRecognizer;
+
+@property (nonatomic, strong) NSMutableArray<CCHAttributedLink*>* links;
+@property (nonatomic, strong) NSArray<CCHAttributedLink*>*        linksForTouchDown;
 
 @end
 
@@ -62,6 +65,7 @@ NSString *const CCHLinkAttributeName = @"CCHLinkAttributeName";
 
 - (void)setUp
 {
+    self.links = [NSMutableArray new];
     self.linkTextTouchAttributes = @{NSBackgroundColorAttributeName : UIColor.lightGrayColor};
     
     self.tapAreaInsets = UIEdgeInsetsMake(-5, -5, -5, -5);
@@ -136,6 +140,8 @@ NSString *const CCHLinkAttributeName = @"CCHLinkAttributeName";
 
 - (void)setAttributedText:(NSAttributedString *)attributedText
 {
+    [self.links removeAllObjects];
+
     NSMutableAttributedString *mutableAttributedText = [attributedText mutableCopy];
     [mutableAttributedText enumerateAttribute:CCHLinkAttributeName inRange:NSMakeRange(0, attributedText.length) options:0 usingBlock:^(id value, NSRange range, BOOL *stop) {
         if (value) {
@@ -146,53 +152,66 @@ NSString *const CCHLinkAttributeName = @"CCHLinkAttributeName";
     [super setAttributedText:mutableAttributedText];
 }
 
-- (void)enumerateViewRectsForRanges:(NSArray *)ranges usingBlock:(void (^)(CGRect rect, NSRange range, BOOL *stop))block
+- (void) enumerateViewRectsForRanges: (NSArray<NSValue*>*) ranges
+                          usingBlock: (void (^)(CGRect rect, NSRange range, BOOL* stop)) block
 {
     if (!block) {
         return;
     }
 
-    for (NSValue *rangeAsValue in ranges) {
+    for (NSValue* rangeAsValue in ranges)
+    {
         NSRange range = rangeAsValue.rangeValue;
-        NSRange glyphRange = [self.layoutManager glyphRangeForCharacterRange:range actualCharacterRange:NULL];
-        [self.layoutManager enumerateEnclosingRectsForGlyphRange:glyphRange withinSelectedGlyphRange:NSMakeRange(NSNotFound, 0) inTextContainer:self.textContainer usingBlock:^(CGRect rect, BOOL *stop) {
-            rect.origin.x += self.textContainerInset.left;
-            rect.origin.y += self.textContainerInset.top;
-            rect = UIEdgeInsetsInsetRect(rect, self.tapAreaInsets);
-            
-            block(rect, range, stop);
-        }];
+        NSRange glyphRange = [self.layoutManager glyphRangeForCharacterRange: range actualCharacterRange: nil];
+        [self.layoutManager enumerateLineFragmentsForGlyphRange: glyphRange
+                                                     usingBlock: ^(CGRect r, CGRect usedRect, NSTextContainer* textContainer, NSRange lineRange, BOOL* stop)
+                                                     {
+                                                         [self.layoutManager enumerateEnclosingRectsForGlyphRange: NSIntersectionRange(glyphRange, lineRange)
+                                                                                         withinSelectedGlyphRange: NSMakeRange(NSNotFound, 0)
+                                                                                                  inTextContainer: textContainer
+                                                                                                       usingBlock: ^(CGRect highlightRect, BOOL* s)
+                                                                                                       {
+                                                                                                           highlightRect.origin.x  += self.textContainerInset.left;
+                                                                                                           highlightRect.size.width = ceilf(highlightRect.size.width);
+                                                                                                           block(highlightRect, range, s);
+                                                                                                       }];
+                                                     }];
     }
 }
 
-- (BOOL)enumerateLinkRangesContainingLocation:(CGPoint)location usingBlock:(void (^)(NSRange range))block
+- (BOOL) enumerateLinkRangesContainingLocation: (CGPoint) location
+                                    usingBlock: (void (^)(CCHAttributedLink* link)) block
 {
-    __block BOOL found = NO;
-    
-    NSAttributedString *attributedString = self.attributedText;
-    [attributedString enumerateAttribute:CCHLinkAttributeName inRange:NSMakeRange(0, attributedString.length) options:0 usingBlock:^(id value, NSRange range, BOOL *stop) {
-        if (found) {
-            *stop = YES;
-            return;
-        }
-        if (value) {
-            [self enumerateViewRectsForRanges:@[[NSValue valueWithRange:range]] usingBlock:^(CGRect rect, NSRange range, BOOL *stop) {
-                if (found) {
-                    *stop = YES;
-                    return;
-                }
-                if (CGRectContainsPoint(rect, location)) {
-                    found = YES;
-                    *stop = YES;
-                    if (block) {
-                        block(range);
-                    }
-                }
-            }];
-        }
-    }];
-    
-    return found;
+    for (CCHAttributedLink* link in self.links)
+    {
+        __block BOOL found = NO;
+        [self enumerateViewRectsForRanges: @[[NSValue valueWithRange: link.result.range]]
+                               usingBlock: ^(CGRect rect, NSRange range, BOOL* stop)
+                               {
+                                   if (CGRectContainsPoint(rect, location))
+                                   {
+                                       if (block)
+                                       {
+                                           block(link);
+                                       }
+                                       found = YES;
+                                       *stop = YES;
+                                   }
+                               }];
+        if (found)
+            return YES;
+    }
+    return NO;
+}
+
+- (void) addLink: (CCHAttributedLink*) link
+{
+    [self.links addObject: link];
+
+    NSMutableDictionary<NSString*, id>* linkAttributes = [link.attributes mutableCopy];
+    linkAttributes[CCHLinkAttributeName] = link;
+    [self.textStorage addAttributes: linkAttributes
+                              range: link.result.range];
 }
 
 - (void)setMinimumPressDuration:(CFTimeInterval)minimumPressDuration
@@ -225,34 +244,26 @@ NSString *const CCHLinkAttributeName = @"CCHLinkAttributeName";
     }
 }
 
-- (void)drawRoundedCornerForRange:(NSRange)range
+- (void) drawRect: (CGRect) rect
 {
-    CALayer *layer = [[CALayer alloc] init];
-    layer.frame = self.bounds;
-    layer.backgroundColor = [[UIColor clearColor] CGColor];
-    
-    UIGraphicsBeginImageContextWithOptions(layer.bounds.size, NO, 0.0);
     CGContextRef context = UIGraphicsGetCurrentContext();
-    CGContextSetFillColorWithColor(context, [[UIColor whiteColor] CGColor]);
-    CGContextFillRect(context, layer.bounds); // Unmask the whole text area
-    
-    NSRange glyphRange = [self.layoutManager glyphRangeForCharacterRange:range actualCharacterRange:NULL];
-    [self.layoutManager enumerateEnclosingRectsForGlyphRange:glyphRange withinSelectedGlyphRange:NSMakeRange(NSNotFound, 0) inTextContainer:self.textContainer usingBlock:^(CGRect rect, BOOL *stop) {
-        rect.origin.x += self.textContainerInset.left;
-        rect.origin.y += self.textContainerInset.top;
-        
-        CGContextClearRect(context, CGRectInset(rect, -1, -1)); // Mask the rectangle of the range
-        
-        CGContextAddPath(context, [UIBezierPath bezierPathWithRoundedRect:rect cornerRadius:self.linkCornerRadius].CGPath);
-        CGContextSetFillColorWithColor(context, [[UIColor whiteColor] CGColor]);  // Unmask the rounded area inside the rectangle
-        CGContextFillPath(context);
-    }];
-    
-    UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
+    for (CCHAttributedLink* link in self.linksForTouchDown)
+    {
+        UIColor* backgroundColor = link.activeAttributes[NSBackgroundColorAttributeName];
+        if (!backgroundColor)
+            continue;
 
-    [layer setContents:(id)[image CGImage]];
-    self.layer.mask = layer;
+        [self enumerateViewRectsForRanges: @[[NSValue valueWithRange: link.result.range]]
+                               usingBlock: ^(CGRect r, NSRange range, BOOL* stop)
+                               {
+                                   CGContextAddPath(context, [UIBezierPath bezierPathWithRoundedRect: CGRectInset(r, -1.0f, 0.0f)
+                                                                                        cornerRadius: self.linkCornerRadius].CGPath);
+                               }];
+
+        CGContextSetFillColorWithColor(context, backgroundColor.CGColor);
+        CGContextFillPath(context);
+    }
+    [super drawRect: rect];
 }
 
 #pragma mark Gesture recognition
@@ -260,101 +271,101 @@ NSString *const CCHLinkAttributeName = @"CCHLinkAttributeName";
 - (void)linkAction:(CCHLinkGestureRecognizer *)recognizer
 {
     if (recognizer.state == UIGestureRecognizerStateBegan) {
-        NSAssert(self.rangeValuesForTouchDown == nil, @"Invalid touch down ranges");
+        NSAssert(self.linksForTouchDown == nil, @"Invalid touch down ranges");
         
         CGPoint location = [recognizer locationInView:self];
-        self.rangeValuesForTouchDown = [self didTouchDownAtLocation:location];
-    } else if (recognizer.state == UIGestureRecognizerStateEnded) {
-        NSAssert(self.rangeValuesForTouchDown != nil, @"Invalid touch down ranges");
+        self.linksForTouchDown = [self didTouchDownAtLocation:location];
+        if (self.linksForTouchDown.count)
+            [self setNeedsDisplay];
+    }
+    else if (recognizer.state == UIGestureRecognizerStateEnded) {
+        NSAssert(self.linksForTouchDown != nil, @"Invalid touch down ranges");
         
-        if (recognizer.result == CCHLinkGestureRecognizerResultTap) {
-            [self didTapAtRangeValues:self.rangeValuesForTouchDown];
-        } else if (recognizer.result == CCHLinkGestureRecognizerResultLongPress) {
-            [self didLongPressAtRangeValues:self.rangeValuesForTouchDown];
+        if (recognizer.result == CCHLinkGestureRecognizerResultTap)
+        {
+            [self didTapAtRangeValues:self.linksForTouchDown];
+        }
+        else if (recognizer.result == CCHLinkGestureRecognizerResultLongPress)
+        {
+            [self didLongPressAtRangeValues:self.linksForTouchDown];
         }
         
-        [self didCancelTouchDownAtRangeValues:self.rangeValuesForTouchDown];
-        self.rangeValuesForTouchDown = nil;
+        [self didCancelTouchDownAtRangeValues:self.linksForTouchDown];
+        self.linksForTouchDown = nil;
+        [self setNeedsDisplay];
     }
 }
 
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer
+- (BOOL)                         gestureRecognizer: (UIGestureRecognizer*) gestureRecognizer
+shouldRecognizeSimultaneouslyWithGestureRecognizer: (UIGestureRecognizer*) otherGestureRecognizer
 {
     return YES;
 }
 
 #pragma mark Gesture handling
 
-- (NSArray *)didTouchDownAtLocation:(CGPoint)location
+- (NSArray<CCHAttributedLink*>*) didTouchDownAtLocation: (CGPoint) location
 {
-    NSMutableArray *rangeValuesForTouchDown = [NSMutableArray array];
-    [self enumerateLinkRangesContainingLocation:location usingBlock:^(NSRange range) {
-        [rangeValuesForTouchDown addObject:[NSValue valueWithRange:range]];
-        
-        NSMutableAttributedString *attributedText = [self.attributedText mutableCopy];
-        for (NSString *attribute in self.linkTextAttributes) {
-            [attributedText removeAttribute:attribute range:range];
-        }
-        [attributedText addAttributes:self.linkTextTouchAttributes range:range];
-        [super setAttributedText:attributedText];
+    NSMutableArray<CCHAttributedLink*>* links = [NSMutableArray array];
+    [self enumerateLinkRangesContainingLocation: location
+                                     usingBlock: ^(CCHAttributedLink* link)
+                                     {
+                                         [links addObject: link];
 
-        if (self.linkCornerRadius > 0) {
-          [self drawRoundedCornerForRange:range];
-        }
-    }];
-    
-    return rangeValuesForTouchDown;
+                                         NSMutableAttributedString* attributedText = [self.attributedText mutableCopy];
+                                         for (NSString* attribute in link.attributes)
+                                         {
+                                             [attributedText removeAttribute: attribute range: link.result.range];
+                                         }
+
+                                         [link.activeAttributes enumerateKeysAndObjectsUsingBlock: ^(NSString* attributeName, id attr, BOOL* stop)
+                                         {
+                                             if (![attributeName isEqualToString: NSBackgroundColorAttributeName])
+                                                 [attributedText addAttribute: attributeName
+                                                                        value: attr
+                                                                        range: link.result.range];
+                                         }];
+
+                                         [super setAttributedText: attributedText];
+                                     }];
+    return links;
 }
 
-- (void)didCancelTouchDownAtRangeValues:(NSArray *)rangeValues
+- (void)didCancelTouchDownAtRangeValues:(NSArray<CCHAttributedLink*>*)links
 {
-    NSMutableAttributedString *attributedText = [self.attributedText mutableCopy];
-    for (NSValue *rangeValue in rangeValues) {
-        NSRange range = rangeValue.rangeValue;
+    NSMutableAttributedString* attributedText = [self.attributedText mutableCopy];
+    for (CCHAttributedLink* link in links)
+    {
+        NSRange range = link.result.range;
         
-        for (NSString *attribute in self.linkTextTouchAttributes) {
+        for (NSString *attribute in link.activeAttributes) {
             [attributedText removeAttribute:attribute range:range];
         }
-        [attributedText addAttributes:self.linkTextAttributes range:range];
+        [attributedText addAttributes: link.attributes range: range];
     }
     [super setAttributedText:attributedText];
-    self.layer.mask = nil;
 }
 
-- (void)didTapAtRangeValues:(NSArray *)rangeValues
+- (void)didTapAtRangeValues:(NSArray<CCHAttributedLink*>*)links
 {
-    if ([self.linkDelegate respondsToSelector:@selector(linkTextView:didTapLinkWithValue:)]) {
-        for (NSValue *rangeValue in rangeValues) {
-            NSRange range = rangeValue.rangeValue;
-            id value = [self.attributedText attribute:CCHLinkAttributeName atIndex:range.location effectiveRange:NULL];
-            [self.linkDelegate linkTextView:self didTapLinkWithValue:value];
+    if ([self.linkDelegate respondsToSelector:@selector(linkTextView:didTapLink:)])
+    {
+        for (CCHAttributedLink* link in links)
+        {
+            [self.linkDelegate linkTextView:self didTapLink:link];
         }
     }
-//    
-//    [self enumerateLinkRangesContainingLocation:location usingBlock:^(NSRange range) {
-//        if ([self.linkDelegate respondsToSelector:@selector(linkTextView:didTapLinkWithValue:)]) {
-//            id value = [self.attributedText attribute:CCHLinkAttributeName atIndex:range.location effectiveRange:NULL];
-//            [self.linkDelegate linkTextView:self didTapLinkWithValue:value];
-//        }
-//    }];
 }
 
-- (void)didLongPressAtRangeValues:(NSArray *)rangeValues
+- (void)didLongPressAtRangeValues:(NSArray<CCHAttributedLink*>*) links
 {
-    if ([self.linkDelegate respondsToSelector:@selector(linkTextView:didLongPressLinkWithValue:)]) {
-        for (NSValue *rangeValue in rangeValues) {
-            NSRange range = rangeValue.rangeValue;
-            id value = [self.attributedText attribute:CCHLinkAttributeName atIndex:range.location effectiveRange:NULL];
-            [self.linkDelegate linkTextView:self didLongPressLinkWithValue:value];
+    if ([self.linkDelegate respondsToSelector:@selector(linkTextView:didLongPressLink:)])
+    {
+        for (CCHAttributedLink* link in links)
+        {
+            [self.linkDelegate linkTextView:self didLongPressLink:link];
         }
     }
-
-//    [self enumerateLinkRangesContainingLocation:location usingBlock:^(NSRange range) {
-//        if ([self.linkDelegate respondsToSelector:@selector(linkTextView:didLongPressLinkWithValue:)]) {
-//            id value = [self.attributedText attribute:CCHLinkAttributeName atIndex:range.location effectiveRange:NULL];
-//            [self.linkDelegate linkTextView:self didLongPressLinkWithValue:value];
-//        }
-//    }];
 }
 
 @end

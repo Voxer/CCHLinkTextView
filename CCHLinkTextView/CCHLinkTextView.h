@@ -27,6 +27,7 @@
 
 @class CCHLinkGestureRecognizer;
 @protocol CCHLinkTextViewDelegate;
+@class CCHAttributedLink;
 
 /** Attribute name for links. The value can by any object.*/
 extern NSString *const CCHLinkAttributeName;
@@ -67,6 +68,8 @@ extern NSString *const CCHLinkAttributeName;
  @param location point in this view's coordinates.
  @param block block that's called for every link range that was found.
  */
-- (BOOL)enumerateLinkRangesContainingLocation:(CGPoint)location usingBlock:(void (^)(NSRange range))block;
+- (BOOL)enumerateLinkRangesContainingLocation:(CGPoint)location usingBlock:(void (^)(CCHAttributedLink*))block;
+
+- (void) addLink: (CCHAttributedLink*) link;
 
 @end

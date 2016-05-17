@@ -26,6 +26,7 @@
 #import <Foundation/Foundation.h>
 
 @class CCHLinkTextView;
+@class CCHAttributedLink;
 
 /** Methods called by `CCHLinkTextView` when links are tapped or long pressed. */
 @protocol CCHLinkTextViewDelegate <NSObject>
@@ -33,9 +34,9 @@
 @optional
 
 /** The user has tapped on a link. */
-- (void)linkTextView:(CCHLinkTextView *)linkTextView didTapLinkWithValue:(id)value;
+- (void)linkTextView:(CCHLinkTextView *)linkTextView didTapLink:(CCHAttributedLink*)link;
 
 /** The user has long pressed a link. */
-- (void)linkTextView:(CCHLinkTextView *)linkTextView didLongPressLinkWithValue:(id)value;
+- (void)linkTextView:(CCHLinkTextView *)linkTextView didLongPressLink:(CCHAttributedLink*)link;
 
 @end
